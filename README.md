@@ -199,3 +199,52 @@ pool = address(uint256(keccak256(abi.encodePacked(hex'ff',factory,keccak256(abi.
 
 
 
+
+#### 3. `CallbackValidation.sol`
+
+The **`CallbackValidation`** library contains functions to validate callbacks from Uniswap V3 Pools. It ensures that the callbacks made to the pool are from valid and authorized addresses, helping to prevent unauthorized interactions with the pool contracts.
+
+##### Function
+##### 1. `verifyCallback` 
+
+```solidity
+function verifyCallback(address factory, PoolAddress.PoolKey memory poolKey)
+internal view returns (IUniswapV3Pool pool)
+{
+pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
+    require(msg.sender == address(pool));
+}
+```
+
+- **Purpose**: To verify if the sender of the callback is the expected  Uniswap  V3 pool.
+- **Parameters**:
+        `factory`: The contract address of the Uniswap V3 factory.
+        `poolKey`: The identifying key of the V3 pool that includes the token addresses and the fee.
+- **Returns**:  `pool` : A uniswap v3 pool contract address.
+- **Explanation**:The function calls `PoolAddress.computeAddress(..)`  to compute the pool after that it checks that the sender of the callback (msg.sender) is indeed the computed pool address. If the sender is not the expected pool address, the transaction will revert.
+##### 2. `verifyCallback`
+
+```solidity
+function verifyCallback(
+    address factory,
+    address tokenA,
+    address tokenB,
+    uint24 fee
+) internal view returns (IUniswapV3Pool pool) {
+    return verifyCallback(factory, PoolAddress.getPoolKey(tokenA, tokenB, fee));
+}
+```
+
+**Purpose**: To verify if the sender of the callback is the expected  Uniswap  V3 pool.
+
+- **Parameters**:
+    - `factory`: The contract address of the Uniswap V3 factory.
+    - `tokenA`: The contract address of either token0 or token1 in the pool.
+    - `tokenB`: The contract address of the other token in the pool.
+    - `fee`: The pool
+- **Returns**:  `pool` : A uniswap v3 pool contract address.
+- **Explanation** : The function makes a call to `PoolAddress.getPoolKey()` which return a `Poolkey` and `factorty` are passed as parameter to the first `verifyCallback` function and that Verification and computation of the pool address happens. 
+
+
+
+
