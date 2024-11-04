@@ -511,7 +511,7 @@ Finally, it calculates and returns the output amount by converting the negative 
 
 
 **Libraries Used**:  
-- `Path`: For decoding the token path.  
+- `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.  
 - `SafeCast`: For safely casting between integer types.
 - `TickMath`: To determine the value of `sqrtPriceLimitX96`
 
@@ -571,7 +571,10 @@ The `exactInputSingle` function performs a single-hop exact input swap. The func
 **Returns**:  
 - `amountOut`: `uint256` - The actual amount of output tokens received from the swap.
 
-**Explanation**:  
+**Explanation**: 
+ **Deadline Check**  
+   The function check the swap deadline by using the `checkDeadline` modifier (inheritied from`PeripheryValidation`) . If the transaction does not meet this deadline, it reverts.
+
 - The `exactInputSingle` function begins by calling `exactInputInternal` with the input amount and other parameters extracted from `params`.
 - It uses `abi.encodePacked` to create a packed path (containing `tokenIn`, `fee`, and `tokenOut`) for the swap and encodes it in the `SwapCallbackData` struct, setting `payer` to the `msg.sender`.
 - The `exactInputInternal` function returns the actual output amount, which is stored in `amountOut`.
@@ -652,6 +655,9 @@ The `exactInput` function performs a multi-hop swap, meaning it allows a user to
 - `amountOut` (`uint256`): The total amount of the output token received by the recipient at the end of the swap.
 
 **Explanation**:  
+ **Deadline Check**  
+   The function check the swap deadline by using the `checkDeadline` modifier (inheritied from`PeripheryValidation`) . If the transaction does not meet this deadline, it reverts.
+
 1. **Setting the Initial Payer**  
    The function starts by setting the `payer` as `msg.sender`, which will be responsible for covering the input cost for the first swap.
 
@@ -675,3 +681,247 @@ The `exactInput` function performs a multi-hop swap, meaning it allows a user to
 **Libraries Used**:  
 - `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.
   
+
+
+##### 6. `exactOutputInternal`
+
+```solidity
+
+    // In the swap function, we add two new parameters: zeroForOne and amountSpecified. zeroForOne is the flag that controls swap direction:
+    // when true, token0 is traded in for token1; when false, it’s the opposite. For example, if token0 is ETH and token1 is USDC
+    // , setting zeroForOne to true means buying USDC for ETH. amountSpecified is the number of tokens the user wants to sell.
+
+    /// @dev Performs a single exact output swap
+    function exactOutputInternal(
+        uint256 amountOut,
+        address recipient,
+        uint160 sqrtPriceLimitX96,
+        SwapCallbackData memory data
+    ) private returns (uint256 amountIn) {
+        // allow swapping to the router address with address 0
+        if (recipient == address(0)) recipient = address(this);
+
+        (address tokenOut, address tokenIn, uint24 fee) = data.path.decodeFirstPool();
+
+        bool zeroForOne = tokenIn < tokenOut;
+
+        (int256 amount0Delta, int256 amount1Delta) = getPool(tokenIn, tokenOut, fee).swap(
+            recipient,
+            zeroForOne,
+            -amountOut.toInt256(),
+            sqrtPriceLimitX96 == 0
+                ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+                : sqrtPriceLimitX96,
+            abi.encode(data)
+        );
+
+        uint256 amountOutReceived;
+        (amountIn, amountOutReceived) = zeroForOne
+            ? (uint256(amount0Delta), uint256(-amount1Delta))
+            : (uint256(amount1Delta), uint256(-amount0Delta));
+        // it's technically possible to not receive the full output amount,
+        // so if no price limit has been specified, require this possibility away
+        if (sqrtPriceLimitX96 == 0) require(amountOutReceived == amountOut);
+    }
+
+
+```
+
+**Purpose**:  
+The `exactOutputInternal` function performs a single exact output swap. This function is designed to swap as few input tokens as possible to receive an exact amount of the output token (`amountOut`). It enables users to specify the exact amount of tokens they wish to receive.
+
+**Parameters**:  
+- `amountOut` (`uint256`): The exact amount of the output token that the user wants to receive.
+- `recipient` (`address`): The address that will receive the output tokens. If `recipient` is the zero address, it defaults to the contract address (`address(this)`).
+- `sqrtPriceLimitX96` (`uint160`): The square root price limit for the swap, specified in fixed-point Q96 format. If this is zero, it uses a calculated boundary value based on the swap direction.  
+- `data` (`SwapCallbackData`): Contains encoded callback data:
+  - `path`: Specifies the pool path for the swap.
+  - `payer`: The address responsible for paying for the swap.
+
+**Returns**:  
+- `amountIn` (`uint256`): The amount of the input token actually spent to achieve the exact output.
+
+**Explanation**:  
+1. **Recipient Address Check**  
+   The function first checks if `recipient` is the zero address (address `0x0`). If so, it sets `recipient` to the contract’s address (`address(this)`) to allow direct swaps to the router.
+
+2. **Path Decoding and Swap Direction**  
+   It decodes the first pool in the path to obtain `tokenIn`, `tokenOut`, and `fee`. The swap direction (`zeroForOne`) is determined by comparing the addresses of `tokenIn` and `tokenOut`: if `tokenIn` is less than `tokenOut`, `zeroForOne` is set to `true` (meaning the trade  is from `tokenIn` to `tokenOut`).
+
+3. **Executing the Swap**  
+   The function calls the `swap` method on the pool:
+   - `recipient`: Address that will receive the output tokens.
+   - `zeroForOne`: Determines swap direction, where `true` represents `token0` to `token1` and `false` is the reverse.
+   - `-amountOut.toInt256()`: Specifies the amount the user wants to receive as a negative integer, as Uniswap V3 interprets negative values for output targets.
+   - `sqrtPriceLimitX96`:  The function checks if whether price limit  was provided if not it uses the tick boundary value from the `TickMath` libary depending on the swap direction. If the swap is from `tokenIn` to `tokenOut` `zeroForOne` is true so `sqrtPriceLimitX96` is  `TickMath.MIN_SQRT_RATIO + 1`  else `sqrtPriceLimitX96` is ` TickMath.MAX_SQRT_RATIO -1 `
+   - `abi.encode(data)`: Passes the callback data for the swap operation.
+
+4. **Amount Calculation**  
+   After the swap, `amount0Delta` and `amount1Delta` are returned, which represents changes in the token balances. The function calculates:
+   - `amountIn`: The amount of `tokenIn` required to perform the swap.
+   - `amountOutReceived`: The actual amount of `tokenOut` received. 
+
+5. **Output Validation**  
+   If `sqrtPriceLimitX96` is zero (no price limit was specified), the function requires that `amountOutReceived` matches `amountOut` exactly.
+
+**Libraries Used**:  
+- `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.  
+- `SafeCast`: For safely casting between integer types.
+
+
+##### 7. `exactOutputSingle`
+
+![excution path of exactOutputSingle](image-5.png)
+> the excution graph of exactOutputSingle
+
+```solidity 
+
+struct ExactOutputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountOut;
+        uint256 amountInMaximum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    /// @inheritdoc ISwapRouter
+    function exactOutputSingle(ExactOutputSingleParams calldata params)
+        external
+        payable
+        override
+        checkDeadline(params.deadline)
+        returns (uint256 amountIn)
+    {
+        // avoid an SLOAD by using the swap return data
+        amountIn = exactOutputInternal(
+            params.amountOut,
+            params.recipient,
+            params.sqrtPriceLimitX96,
+            SwapCallbackData({path: abi.encodePacked(params.tokenOut, params.fee, params.tokenIn), payer: msg.sender})
+        );
+
+        require(amountIn <= params.amountInMaximum, "Too much requested");
+        // has to be reset even though we don't use it in the single hop case
+        amountInCached = DEFAULT_AMOUNT_IN_CACHED;
+    }
+
+
+```
+
+**Purpose**:  
+The `exactOutputSingle` function performs a single-hop exact output swap, where the goal is to receive a specific amount (`amountOut`) of `tokenOut` by spending as little of `tokenIn` as possible, but not exceeding a maximum input amount (`amountInMaximum`). 
+
+**Parameters**:  
+- `params` (`ExactOutputSingleParams`): A struct that holds the parameters required for the exact output swap:
+  - `tokenIn` (`address`): The input token address.
+  - `tokenOut` (`address`): The output token address.
+  - `fee` (`uint24`): The pool fee for the swap.
+  - `recipient` (`address`): Address that will receive the output tokens.
+  - `deadline` (`uint256`): A timestamp after which the transaction will revert if not completed.
+  - `amountOut` (`uint256`): Exact amount of output tokens desired.
+  - `amountInMaximum` (`uint256`): Maximum amount of input tokens allowed to be spent.
+  - `sqrtPriceLimitX96` (`uint160`): Optional square root price limit for controlling the price range during the swap.
+
+**Returns**:  
+- `amountIn` (`uint256`): The actual amount of the input token used in the swap.
+
+**Explanation**:  
+1. **Deadline Check**  
+   The function check the swap deadline by using the `checkDeadline` modifier (inheritied from`PeripheryValidation`) . If the transaction does not meet this deadline, it reverts.
+
+2. **Executing the Swap**  
+   - The `exactOutputInternal` function is called to perform the swap. This function:
+     - Takes the `amountOut`, `recipient`, and `sqrtPriceLimitX96` from `params`.
+     - Encodes the swap path using `params.tokenOut`, `params.fee`, and `params.tokenIn`, since `exactOutputInternal` requires `tokenOut` to come first.
+     - Sets the `payer` as `msg.sender`.
+   - The function returns the `amountIn`, representing the actual amount of input tokens required to get the desired output.
+
+3. **Input Validation**  
+   The function then verifies that the `amountIn` did not exceed `params.amountInMaximum`. If it did, the transaction reverts with `"Too much requested"`.
+
+4. **Resetting Transient Storage**  
+   The transient storage variable `amountInCached` is reset to `DEFAULT_AMOUNT_IN_CACHED` (a placeholder constant),   even though we don't use it in the single hop case. This reset maintains consistency for future multi-hop swaps that  rely on `amountInCached`.
+
+**Libraries Used**:  
+- `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.
+- `SafeCast`: For safely casting between integer types.
+
+
+
+
+##### 8. `exactOutput`
+
+![excution path of exactOutput](image-5.png)
+> the excution graph of exactOutput
+
+```solidity 
+
+struct ExactOutputParams {
+        bytes path;
+        address recipient;
+        uint256 deadline;
+        uint256 amountOut;
+        uint256 amountInMaximum;
+    }
+
+    /// @inheritdoc ISwapRouter
+    function exactOutput(ExactOutputParams calldata params)
+        external
+        payable
+        override
+        checkDeadline(params.deadline)
+        returns (uint256 amountIn)
+    {
+        // it's okay that the payer is fixed to msg.sender here, as they're only paying for the "final" exact output
+        // swap, which happens first, and subsequent swaps are paid for within nested callback frames
+        exactOutputInternal(
+            params.amountOut, params.recipient, 0, SwapCallbackData({path: params.path, payer: msg.sender})
+        );
+
+        amountIn = amountInCached;
+        require(amountIn <= params.amountInMaximum, "Too much requested");
+        amountInCached = DEFAULT_AMOUNT_IN_CACHED;
+    }
+
+```
+### `exactOutput` Function
+
+**Purpose**:  
+The `exactOutput` function performs a multi-hop exact output swap, trying to get a specific amount (`amountOut`) of the output token by spending as little of the input token as possible, with a maximum input limit (`amountInMaximum`). 
+
+**Parameters**:  
+- `params` (`ExactOutputParams`): A struct containing the parameters for the exact output multi-hop swap:
+  - `path` (`bytes`): Encoded path detailing the token sequence for multi-hop swaps.
+  - `recipient` (`address`): The address that will receive the final output tokens.
+  - `deadline` (`uint256`): A timestamp after which the transaction will revert if not completed.
+  - `amountOut` (`uint256`): The exact amount of output tokens desired.
+  - `amountInMaximum` (`uint256`): The maximum allowed input amount, preventing overspending.
+
+**Returns**:  
+- `amountIn` (`uint256`): The actual amount of input tokens used to complete the swap.
+
+**Explanation**:  
+1. **Deadline Check**  
+   The function check the swap deadline by using the `checkDeadline` modifier (inheritied from`PeripheryValidation`) . If the transaction does not meet this deadline, it reverts.
+
+2. **Executing the Swap**  
+   - The `exactOutputInternal` function is called to begin the swap process. This function:
+     - Takes `amountOut`, `recipient`, and an initial `sqrtPriceLimitX96` value of `0` for unrestricted price movement.
+     - Encodes swap callback data, including `params.path` (token swap path) and `msg.sender` as the `payer`.
+
+3. **Amount Calculation**  
+   - Once `exactOutputInternal` completes, `amountIn` is set to the value stored in `amountInCached`. This variable temporarily holds the amount of input tokens consumed in the token swaps.
+
+4. **Input Validation**  
+   - The function checks that `amountIn` does not exceed `params.amountInMaximum`. If `amountIn` surpasses the limit, the function reverts with `"Too much requested"`.
+
+5. **Resetting Transient Storage**  
+   - `amountInCached` is reset to `DEFAULT_AMOUNT_IN_CACHED` to clear transient storage. This reset maintains consistency for future multi-hop swaps that  rely on `amountInCached`.
+
+**Libraries Used**:  
+- `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.
+- `SafeCast`: For safely casting between integer types.
+
