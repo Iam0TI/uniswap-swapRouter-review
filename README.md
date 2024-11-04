@@ -1,4 +1,4 @@
-# uniswap-swapRouter-review
+# UniswapV3 SwapRouter Review
 | Topic          | UniswapV3 SwapRouter.sol            |
 | :------------- | :-----------------------------------|
 | Title          | Smart Contract Review               |
@@ -290,7 +290,7 @@ function verifyCallback(
 
 ### Contract Review 
 
-Now Let's delving into the inner workings of the coNtract .
+Before we dive into the contract review we need to understand  difference between exactInput and exactOutput swaps. In exactInput swaps, users specify how many tokens they want to swap, and the function tries to get the maximum amount of tokens in return. This is useful if users know exactly how much they want  to spend. For exactOutput swaps, users specify the exact amount they want to receive, and the function finds the minimum amount of tokens they need to spend to get it, staying around a maximum budget.  In short, exactInput focuses on maximizing what you get, while exactOutput controls what you spend.
 
 
 
@@ -924,4 +924,9 @@ The `exactOutput` function performs a multi-hop exact output swap, trying to get
 **Libraries Used**:  
 - `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.
 - `SafeCast`: For safely casting between integer types.
+
+
+
+### Conclusion .
+It was  pretty  interesting experience learn about uniswap swap router. It was tough but interesting I enjoyed it. Even though I almost got lost while mutil hopping through function  I was able to decodethe path! :).
 
