@@ -379,6 +379,10 @@ The `getPool` function gets the Uniswap V3 pool contract address for a specified
   
 
 ##### 3. `uniswapV3SwapCallback`
+
+![excution path of uniswapV3SwapCallback](image-1.png)
+> the excution graph of uniswapV3SwapCallback
+
 ```solidity
 
 struct SwapCallbackData {
@@ -511,5 +515,163 @@ Finally, it calculates and returns the output amount by converting the negative 
 - `SafeCast`: For safely casting between integer types.
 - `TickMath`: To determine the value of `sqrtPriceLimitX96`
 
+##### 5. `exactInputSingle`
 
 
+![excution path of exactInputSingle](image-2.png)
+> the excution graph of exactInputSingle
+
+```solidity 
+struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+function exactInputSingle(ExactInputSingleParams calldata params)
+        external
+        payable
+        override
+        checkDeadline(params.deadline)
+        returns (uint256 amountOut)
+    {
+        amountOut = exactInputInternal(
+            params.amountIn,
+            params.recipient,
+            params.sqrtPriceLimitX96,
+            SwapCallbackData({path: abi.encodePacked(params.tokenIn, params.fee, params.tokenOut), payer: msg.sender})
+        );
+        require(amountOut >= params.amountOutMinimum, "Too little received");
+    }
+
+
+```
+
+
+
+**Purpose**:  
+The `exactInputSingle` function performs a single-hop exact input swap. The function takes specific parameters for a single  token swap ,  and send the input amount to the specified recipient, and  also verifies that the output meets a minimum  amountOut.
+
+**Parameters**:
+- `params`: `ExactInputSingleParams calldata` - A struct containing parameters required for the swap, including:
+  - `amountIn`: The input token amount.
+  - `recipient`: The address receiving the output tokens.
+  - `sqrtPriceLimitX96`: The square root price limit for the swap.
+  - `tokenIn`: The input token's address.
+  - `fee`: The swap fee tier.
+  - `tokenOut`: The output token's address.
+  - `amountOutMinimum`: The minimum acceptable amount of output tokens.
+  - `deadline`: The swap's expiration time.
+
+**Returns**:  
+- `amountOut`: `uint256` - The actual amount of output tokens received from the swap.
+
+**Explanation**:  
+- The `exactInputSingle` function begins by calling `exactInputInternal` with the input amount and other parameters extracted from `params`.
+- It uses `abi.encodePacked` to create a packed path (containing `tokenIn`, `fee`, and `tokenOut`) for the swap and encodes it in the `SwapCallbackData` struct, setting `payer` to the `msg.sender`.
+- The `exactInputInternal` function returns the actual output amount, which is stored in `amountOut`.
+- A `require` statement then checks if `amountOut` meets or exceeds `params.amountOutMinimum`. If not, it reverts with an error, "Too little received."
+
+**Libraries Used**:  
+- None , (Kindof), it  `exactInputInternal` uses the `Path` and `CallbackValidation` libraries indirectly.
+
+
+##### 6. `exactInput`
+
+
+![excution path of exactInput](image-4.png)
+> the excution graph of exactInput
+``` solidity
+
+struct ExactInputParams {
+        bytes path;
+        address recipient;
+        uint256 deadline;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+    }
+
+  
+function exactInput(ExactInputParams memory params)
+        external
+        payable
+        override
+        checkDeadline(params.deadline)
+        returns (uint256 amountOut)
+    {
+        address payer = msg.sender; // msg.sender pays for the first hop
+
+        while (true) {
+            bool hasMultiplePools = params.path.hasMultiplePools();
+
+            // the outputs of prior swaps become the inputs to subsequent ones
+            params.amountIn = exactInputInternal(
+                params.amountIn,
+                hasMultiplePools ? address(this) : params.recipient, // for intermediate swaps, this contract custodies
+                0,
+                SwapCallbackData({
+                    path: params.path.getFirstPool(), // only the first pool in the path is necessary
+                    payer: payer
+                })
+            );
+
+            // decide whether to continue or terminate
+            if (hasMultiplePools) {
+                payer = address(this); // at this point, the caller has paid
+                params.path = params.path.skipToken();
+            } else {
+                amountOut = params.amountIn;
+                break;
+            }
+        }
+
+        require(amountOut >= params.amountOutMinimum, "Too little received");
+        }
+
+ ```
+
+
+
+**Purpose**:  
+The `exactInput` function performs a multi-hop swap, meaning it allows a user to swap `amountIn` of one token for as much as possible of another token by following a specified path that can include multiple pools. The function  calls `exactInputInternal` to handle each hop in the swap path, with each intermediate swap's output becoming the input for the next. 
+
+**Parameters**:  
+- `params` (`ExactInputParams`): Contains all necessary inputs for the swap:
+  - `path`: The token swap path, encoded in a sequence of tokens and fees, specifying the pools to use.
+  - `recipient`: The final recipient address of the output tokens.
+  - `deadline`: A timestamp after which the transaction will revert if not completed.
+  - `amountIn`: The exact amount of the input token to be swapped.
+  - `amountOutMinimum`: The minimum acceptable amount of the output token.
+
+**Returns**:  
+- `amountOut` (`uint256`): The total amount of the output token received by the recipient at the end of the swap.
+
+**Explanation**:  
+1. **Setting the Initial Payer**  
+   The function starts by setting the `payer` as `msg.sender`, which will be responsible for covering the input cost for the first swap.
+
+2. **Loop Swapping**  
+   A `while` loop is used to process each hop in the path. For each iteration:
+   - It checks if there are multiple pools in the path using `hasMultiplePools`.
+   - It calls `exactInputInternal` to perform the swap for the current hop, passing in the following:
+     - `params.amountIn` as the amount to swap.
+     - The recipient for this hop: either `params.recipient` if this is the final hop, or `address(this)` if intermediate (to hold tokens temporarily).
+     - The `path` for this hop, decoded to obtain the required pool (using `params.path.getFirstPool()`).
+     - `payer` as the payer for this particular swap.
+
+3. **Path Management**  
+   After each swap:
+   - If there are multiple pools remaining, `payer` is set to `address(this)` to show that any further swaps are paid by the contract itself, and `params.path` is updated by removing the first token using `skipToken()`.
+   - If no additional pools remain, `amountOut` is set to the final `params.amountIn` from the last swap, marking the end of the multi-hop swap.
+
+4. **Output Validation**  
+   Finally, `amountOut` is compared to `params.amountOutMinimum` using `require`. If `amountOut` is less than expected, the transaction reverts with an error ("Too little received"), ensuring that the recipient receives a minimum acceptable amount after all swaps.
+
+**Libraries Used**:  
+- `Path`: To decodes the path to obtain each pools and to determine if multiple pools exist.
+  
